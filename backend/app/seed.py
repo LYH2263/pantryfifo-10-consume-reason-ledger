@@ -10,7 +10,23 @@ def init_db():
     );
     CREATE TABLE IF NOT EXISTS consumptions(id INTEGER PRIMARY KEY AUTOINCREMENT, note TEXT, result_json TEXT, created_at TEXT);
     CREATE TABLE IF NOT EXISTS settings(key TEXT PRIMARY KEY, value TEXT);
+    CREATE TABLE IF NOT EXISTS reason_codes(code TEXT PRIMARY KEY, label TEXT, active INT DEFAULT 1);
+    CREATE TABLE IF NOT EXISTS consume_orders(
+      id INTEGER PRIMARY KEY AUTOINCREMENT, item_id INT, qty REAL,
+      reason_code TEXT, note TEXT, created_at TEXT
+    );
+    CREATE TABLE IF NOT EXISTS consume_lines(
+      id INTEGER PRIMARY KEY AUTOINCREMENT, order_id INT, lot_id INT,
+      take REAL, qty_before REAL, qty_after REAL,
+      reason_code TEXT, created_at TEXT
+    );
     """)
+    if c.execute("SELECT COUNT(*) c FROM reason_codes").fetchone()["c"] == 0:
+        c.executemany("INSERT INTO reason_codes(code,label,active) VALUES (?,?,1)", [
+            ("EAT", "食用"), ("COOK", "烹饪"), ("WASTE", "变质丢弃"), ("SHARE", "赠人"),
+        ])
+    if c.execute("SELECT COUNT(*) c FROM settings WHERE key='default_reason'").fetchone()["c"] == 0:
+        c.execute("INSERT INTO settings(key,value) VALUES ('default_reason','EAT')")
     if c.execute("SELECT COUNT(*) c FROM items").fetchone()["c"] == 0:
         c.executemany("INSERT INTO items(name,layer,unit) VALUES (?,?,?)", [
             ("牛奶", "upper", "盒"), ("鸡蛋", "mid", "个"), ("冻饺", "lower", "袋"),

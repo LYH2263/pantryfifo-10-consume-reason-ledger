@@ -1,14 +1,15 @@
-import json
-from datetime import date, datetime, timezone
+from datetime import date
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from app import seed
 from app.db import connect
-from app.engines.fefo import consume_fefo, expire_lots
+from app.engines.fefo import expire_lots
+from app.modules.consume_reason import router as consume_reason_router
 
 app = FastAPI(title="Pantryfifo", version="0.1.0")
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
+app.include_router(consume_reason_router)
 
 @app.on_event("startup")
 def _startup(): seed.init_db()
@@ -65,30 +66,6 @@ def inbound(body: LotIn):
         "INSERT INTO lots(item_id,qty_in,qty_remain,expiry,status,data_quality) VALUES (?,?,?,?,?,?)",
         (body.item_id, body.qty, body.qty, body.expiry, "on_shelf", "clean"))
     c.commit(); lid = cur.lastrowid; c.close(); return {"id": lid}
-
-class ConsumeIn(BaseModel):
-    item_id: int
-    qty: float
-    note: str = ""
-
-@app.post("/api/consume")
-def consume(body: ConsumeIn):
-    c = connect()
-    lots = [dict(r) for r in c.execute(
-        "SELECT * FROM lots WHERE item_id=? AND status='on_shelf' AND qty_remain>0", (body.item_id,))]
-    result = consume_fefo(lots, body.qty)
-    if not result["ok"] and result["reason"] == "qty_non_positive":
-        c.close(); raise HTTPException(400, result["reason"])
-    if not result["ok"]:
-        c.close(); raise HTTPException(409, result)
-    for d in result["deductions"]:
-        c.execute("UPDATE lots SET qty_remain = qty_remain - ? WHERE id=?", (d["take"], d["lot_id"]))
-        rem = c.execute("SELECT qty_remain FROM lots WHERE id=?", (d["lot_id"],)).fetchone()["qty_remain"]
-        if rem <= 0:
-            c.execute("UPDATE lots SET status='consumed', qty_remain=0 WHERE id=?", (d["lot_id"],))
-    c.execute("INSERT INTO consumptions(note,result_json,created_at) VALUES (?,?,?)",
-              (body.note, json.dumps(result), datetime.now(timezone.utc).isoformat()))
-    c.commit(); c.close(); return result
 
 @app.post("/api/expire-sweep")
 def expire_sweep():
