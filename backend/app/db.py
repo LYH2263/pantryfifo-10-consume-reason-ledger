@@ -7,6 +7,7 @@ def db_path() -> Path:
     return d / "pantryfifo.db"
 
 def connect():
-    c = sqlite3.connect(db_path())
+    # timeout: 等锁上限,并发确认时后到者排队而不是立刻 database is locked
+    c = sqlite3.connect(db_path(), timeout=10)
     c.row_factory = sqlite3.Row
     return c

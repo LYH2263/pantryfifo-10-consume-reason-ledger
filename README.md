@@ -7,4 +7,4 @@
 | 前端 | 5300 |
 | API | 10300 |
 
-0-1：`shopping_list` / `recipe_suggest` / `temp_zone`。
+0-1：`consume_log`(消费原因履历) / `shopping_list` / `recipe_suggest` / `temp_zone`。

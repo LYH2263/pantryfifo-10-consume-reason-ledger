@@ -8,9 +8,21 @@ def init_db():
       id INTEGER PRIMARY KEY AUTOINCREMENT, item_id INT, qty_in REAL, qty_remain REAL,
       expiry TEXT, status TEXT, data_quality TEXT
     );
-    CREATE TABLE IF NOT EXISTS consumptions(id INTEGER PRIMARY KEY AUTOINCREMENT, note TEXT, result_json TEXT, created_at TEXT);
+    CREATE TABLE IF NOT EXISTS consumptions(
+      id INTEGER PRIMARY KEY AUTOINCREMENT, reason TEXT, note TEXT, result_json TEXT, created_at TEXT
+    );
+    CREATE TABLE IF NOT EXISTS consumption_lines(
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      consumption_id INT NOT NULL, lot_id INT NOT NULL, item_id INT NOT NULL,
+      take REAL NOT NULL, reason TEXT NOT NULL, created_at TEXT NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_consumption_lines_lot ON consumption_lines(lot_id);
     CREATE TABLE IF NOT EXISTS settings(key TEXT PRIMARY KEY, value TEXT);
     """)
+    # 老库迁移:consumptions 补 reason 列(履历字只增不改)
+    cols = {r["name"] for r in c.execute("PRAGMA table_info(consumptions)")}
+    if "reason" not in cols:
+        c.execute("ALTER TABLE consumptions ADD COLUMN reason TEXT")
     if c.execute("SELECT COUNT(*) c FROM items").fetchone()["c"] == 0:
         c.executemany("INSERT INTO items(name,layer,unit) VALUES (?,?,?)", [
             ("牛奶", "upper", "盒"), ("鸡蛋", "mid", "个"), ("冻饺", "lower", "袋"),
@@ -26,5 +38,6 @@ def init_db():
             ],
         )
         c.execute("INSERT INTO settings(key,value) VALUES ('warn_days','3')")
-        c.commit()
+    c.execute("INSERT OR IGNORE INTO settings(key,value) VALUES ('default_reason','日常消耗')")
+    c.commit()
     c.close()

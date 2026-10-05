@@ -1,11 +1,11 @@
-import json
-from datetime import date, datetime, timezone
+from datetime import date
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from app import seed
 from app.db import connect
-from app.engines.fefo import consume_fefo, expire_lots
+from app.engines.fefo import expire_lots
+from app.modules import consume_log
 
 app = FastAPI(title="Pantryfifo", version="0.1.0")
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
@@ -69,26 +69,30 @@ def inbound(body: LotIn):
 class ConsumeIn(BaseModel):
     item_id: int
     qty: float
+    reason: str = ""
     note: str = ""
+
+_CONSUME_ERR_STATUS = {"reason_required": 400, "qty_non_positive": 400}
+
+@app.post("/api/consume/preview")
+def consume_preview(body: ConsumeIn):
+    # 预览:只读,列出将扣的 lot 与 take,不写履历、不改余量
+    return consume_log.preview_consume(body.item_id, body.qty)
 
 @app.post("/api/consume")
 def consume(body: ConsumeIn):
-    c = connect()
-    lots = [dict(r) for r in c.execute(
-        "SELECT * FROM lots WHERE item_id=? AND status='on_shelf' AND qty_remain>0", (body.item_id,))]
-    result = consume_fefo(lots, body.qty)
-    if not result["ok"] and result["reason"] == "qty_non_positive":
-        c.close(); raise HTTPException(400, result["reason"])
-    if not result["ok"]:
-        c.close(); raise HTTPException(409, result)
-    for d in result["deductions"]:
-        c.execute("UPDATE lots SET qty_remain = qty_remain - ? WHERE id=?", (d["take"], d["lot_id"]))
-        rem = c.execute("SELECT qty_remain FROM lots WHERE id=?", (d["lot_id"],)).fetchone()["qty_remain"]
-        if rem <= 0:
-            c.execute("UPDATE lots SET status='consumed', qty_remain=0 WHERE id=?", (d["lot_id"],))
-    c.execute("INSERT INTO consumptions(note,result_json,created_at) VALUES (?,?,?)",
-              (body.note, json.dumps(result), datetime.now(timezone.utc).isoformat()))
-    c.commit(); c.close(); return result
+    try:
+        return consume_log.confirm_consume(body.item_id, body.qty, body.reason, body.note)
+    except consume_log.ConsumeError as e:
+        raise HTTPException(_CONSUME_ERR_STATUS.get(e.code, 409), e.payload)
+
+@app.get("/api/consumptions")
+def consumptions(lot_id: int | None = None, item_id: int | None = None):
+    return consume_log.history(lot_id=lot_id, item_id=item_id)
+
+@app.get("/api/consumptions/reconcile")
+def consumptions_reconcile():
+    return consume_log.reconcile_by_lot()
 
 @app.post("/api/expire-sweep")
 def expire_sweep():
@@ -102,3 +106,22 @@ def expire_sweep():
 @app.get("/api/settings")
 def settings():
     c = connect(); rows = {r["key"]: r["value"] for r in c.execute("SELECT * FROM settings")}; c.close(); return rows
+
+class SettingIn(BaseModel):
+    key: str
+    value: str
+
+_EDITABLE_SETTINGS = {"warn_days", "default_reason"}
+
+@app.put("/api/settings")
+def put_setting(body: SettingIn):
+    # 只写 settings 表;已落库的履历行保持原文,新确认才用新默认
+    if body.key not in _EDITABLE_SETTINGS:
+        raise HTTPException(400, "unknown_key")
+    value = body.value.strip()
+    if not value:
+        raise HTTPException(400, "empty_value")
+    c = connect()
+    c.execute("INSERT INTO settings(key,value) VALUES (?,?)"
+              " ON CONFLICT(key) DO UPDATE SET value=excluded.value", (body.key, value))
+    c.commit(); c.close(); return {"key": body.key, "value": value}
